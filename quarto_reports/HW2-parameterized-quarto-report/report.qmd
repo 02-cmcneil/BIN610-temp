@@ -1,0 +1,126 @@
+---
+title: "RNA Sequencing Report"
+author: "Collin McNeil"
+format:
+  html:
+    embed-resources: true
+    html-table-processing: none
+params:
+  data_path: "data/RNAseq_july_5.csv"
+---
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+#| label: setup
+
+library(tidyverse)
+library(ggrepel)
+library(kableExtra)
+
+data_path <- params$data_path
+
+# Read the data
+raw_data <- read.csv(data_path)
+```
+
+```{r}
+#| echo: false
+#| message: false
+#| warning: false
+# Extract date from filename for display
+# Extract just the filename from the path
+filename <- basename(data_path)
+# Extract month and day (e.g., "july_5" from "RNAseq_july_5.csv")
+date_parts <- str_match(filename, "RNAseq_([a-z]+)_([0-9]+)\\.csv")
+month_name <- date_parts[2]
+day_num <- as.numeric(date_parts[3])
+
+# Capitalize month and add appropriate suffix to day
+month_display <- str_to_title(month_name)
+day_suffix <- case_when(
+  day_num %in% c(11, 12, 13) ~ "th",
+  day_num %% 10 == 1 ~ "st",
+  day_num %% 10 == 2 ~ "nd",
+  day_num %% 10 == 3 ~ "rd",
+  TRUE ~ "th"
+)
+date_display <- paste0(month_display, " ", day_num, day_suffix)
+
+# Custom function to categorize rows as "Down", "Up", or "Not Sig"
+color_function <- function(logFC, negLog10Pval){
+  cutoff <- 3.0
+  if (negLog10Pval < cutoff){
+    return("Not Sig")
+  } else{
+    if (logFC < 0){
+      return("Down")
+    } else{
+      return("Up")
+    }
+  }
+}
+
+# Create plotting dataframe with negLog10Pval and color mapping
+plot_df <- raw_data %>%
+  mutate(negLog10Pval = -log10(pvalue)) %>%
+  mutate(color_mapping = mapply(color_function, logFC, negLog10Pval))
+
+# Identify top 11 genes by P-value (smallest p-values)
+top_11_genes <- plot_df %>%
+  arrange(pvalue) %>%
+  slice(1:11) %>%
+  pull(symbol)
+
+# Create label and alpha mapping variables
+final_plot_df <- plot_df %>%
+  mutate(
+    dot_label = ifelse(symbol %in% top_11_genes, symbol, ""),
+    alpha_level = ifelse(symbol %in% top_11_genes, 1, 0.3)
+  )
+```
+
+## `r date_display`, Top 11 Genes
+
+```{r}
+#| echo: false
+#| fig-width: 8
+#| fig-height: 8
+#| fig-align: "center"
+
+ggplot(data = final_plot_df,
+       aes(x = logFC, y = negLog10Pval, color = color_mapping)) +
+  # All points with color and alpha aesthetic
+  geom_point(aes(alpha = alpha_level)) +
+  # Circled top 11 genes (black circles)
+  geom_point(data = filter(final_plot_df, symbol %in% top_11_genes),
+             shape = 21, size = 2.5, color = "black", fill = NA, stroke = .5) +
+  # Labels for top 11
+  geom_text_repel(aes(label = dot_label), color = "black", size = 3.75) +
+  labs(x = "Log of Fold-Change",
+       y = "-log10(P-value)",
+       title = paste("Volcano Plot, Sequence Run", date_display)) +
+  scale_color_manual("", values = c("dodgerblue", "gray", "red3")) +
+  scale_alpha_identity() +  # Use alpha values as-is, removes legend
+  theme_bw()
+```
+
+```{r}
+#| echo: false
+
+# Create table of top 11 genes
+table_df <- plot_df %>%
+  arrange(pvalue) %>%
+  slice(1:11) %>%
+  select(symbol, logFC, pvalue) %>%
+  mutate(pvalue = formatC(pvalue, format = "e", digits = 3))
+
+# Display table
+kable(table_df, 
+      col.names = c("Gene Symbol", "Log Fold-change", "P-value"),
+      align = c("l", "c", "c")) %>%
+  kable_styling(bootstrap_options = "striped", 
+                full_width = FALSE,
+                position = "center")
+```
