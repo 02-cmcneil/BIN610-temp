@@ -1,0 +1,308 @@
+---
+title: "Alzheimer's Disease Gene Expression"
+subtitle: "Parameterized Reporting & Interactive Exploration in R"
+author: "Collin McNeil"
+format:
+  revealjs:
+    footer: "BIN610 Final Presentation — Collin McNeil"
+    transition: slide
+    theme: simple
+    smaller: true
+---
+
+```{r}
+#| label: setup
+#| echo: false
+#| message: false
+#| warning: false
+
+library(tidyverse)
+library(gt)
+
+# Load hippocampus data for visualization examples
+de <- read.csv("data/AD_hippocampus_de.csv")
+
+expr_wide <- read.csv("data/AD_hippocampus_expr.csv")
+```
+
+## Research Area: Alzheimer's Disease
+
+Alzheimer's disease (AD) is a progressive neurodegenerative disorder and the leading cause of dementia worldwide.
+
+::: {.incremental}
+- The brain is not uniformly affected — some regions deteriorate earlier than others
+- The **hippocampus** and **entorhinal cortex** show early, severe damage (memory and navigation)
+- The **postcentral gyrus** and **superior frontal gyrus** tend to be affected later
+- Understanding *which genes* are disrupted in each region helps identify both shared disease mechanisms and region-specific vulnerabilities
+:::
+
+## The Data: GSE48350
+
+Postmortem brain tissue microarray data from the **Gene Expression Omnibus** (GEO).
+
+::::: {.columns}
+
+:::: {.column width="50%"}
+**253 total samples**
+
+- 80 Alzheimer's patients
+- 173 age-matched controls
+
+**4 brain regions**
+
+- Hippocampus
+- Entorhinal Cortex
+- Postcentral Gyrus
+- Superior Frontal Gyrus
+::::
+
+:::: {.column width="50%"}
+**54,675 genes measured** per sample via microarray
+
+Each gene has a measured expression level — we compare AD patients vs. controls to find genes that are significantly **up-** or **down-regulated**
+::::
+
+:::::
+
+## What is Differential Gene Expression?
+
+. . .
+
+When we compare gene activity between two groups (here: AD vs. control), we calculate for each gene:
+
+::: {.incremental}
+- **Log2 Fold Change (logFC):** how much the gene's expression changed
+  - Positive = higher in AD (upregulated)
+  - Negative = lower in AD (downregulated)
+- **Adjusted p-value:** statistical confidence after correcting for testing ~55,000 genes at once
+- A gene is considered **significantly differentially expressed** when it meets both a fold change and p-value threshold
+:::
+
+## Volcano Plot {.nostretch}
+
+Each point is one gene. A useful way to see *both* effect size and significance at once.
+
+```{r}
+#| echo: false
+#| fig-width: 7
+#| fig-height: 4.5
+#| fig-align: center
+
+de %>%
+  filter(
+    abs(log2_fold_change) <= quantile(abs(log2_fold_change), 0.99, na.rm = TRUE),
+    -log10(adj_p_value) <= quantile(-log10(adj_p_value), 0.99, na.rm = TRUE)
+  ) %>%
+  mutate(
+    sig = case_when(
+      adj_p_value < 0.05 & log2_fold_change > 0 ~ "Upregulated",
+      adj_p_value < 0.05 & log2_fold_change < 0 ~ "Downregulated",
+      TRUE ~ "Not significant"
+    )
+  ) %>%
+  ggplot(aes(x = log2_fold_change, y = -log10(adj_p_value), color = sig)) +
+  geom_point(alpha = 0.5, size = 0.9) +
+  scale_color_manual(
+    name = NULL,
+    values = c("Upregulated" = "red", "Downregulated" = "blue", "Not significant" = "gray70")
+  ) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "black", linewidth = 0.4) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black", linewidth = 0.4) +
+  labs(
+    title = "Volcano Plot — Hippocampus (AD vs. Control)",
+    x = "Log2 Fold Change",
+    y = "-Log10 (Adjusted p-value)"
+  ) +
+  theme_bw(base_size = 12)
+```
+
+::: {style="font-size: 0.75em;"}
+**X-axis:** magnitude of change — **Y-axis:** statistical confidence — **Dashed lines:** significance thresholds
+:::
+
+## Top Differentially Expressed Genes {.nostretch}
+
+The 20 genes with the largest absolute fold change in the Hippocampus.
+
+```{r}
+#| echo: false
+#| fig-width: 7
+#| fig-height: 4.5
+#| fig-align: center
+
+de %>%
+  arrange(desc(abs(log2_fold_change))) %>%
+  distinct(gene_symbol, .keep_all = TRUE) %>%
+  slice_head(n = 20) %>%
+  mutate(
+    gene_symbol = fct_reorder(gene_symbol, abs(log2_fold_change)),
+    direction = ifelse(log2_fold_change > 0, "Upregulated", "Downregulated")
+  ) %>%
+  ggplot(aes(x = gene_symbol, y = log2_fold_change, fill = direction)) +
+  geom_col() +
+  scale_fill_manual(
+    name = NULL,
+    values = c("Upregulated" = "red", "Downregulated" = "blue")
+  ) +
+  coord_flip() +
+  labs(
+    title = "Top 20 DE Genes by Fold Change — Hippocampus",
+    x = "Gene",
+    y = "Log2 Fold Change (AD / Control)"
+  ) +
+  theme_bw(base_size = 12)
+```
+
+::: {style="font-size: 0.75em;"}
+Red = higher expression in AD (upregulated) — Blue = lower expression in AD (downregulated)
+:::
+
+## Heatmap of Top Significant Genes {.nostretch}
+
+Rows: the 10 most statistically significant genes. Columns: individual samples, grouped by disease status.
+
+```{r}
+#| echo: false
+#| fig-width: 9
+#| fig-height: 4.2
+#| fig-align: center
+
+expr_long <- expr_wide %>%
+  pivot_longer(-gene_symbol, names_to = "sample", values_to = "expression") %>%
+  mutate(condition = str_extract(sample, "^[^_]+"))
+
+gene_order <- de %>%
+  filter(!is.na(gene_symbol)) %>%
+  arrange(adj_p_value) %>%
+  pull(gene_symbol) %>%
+  unique() %>%
+  head(10)
+
+sample_order <- expr_long %>%
+  distinct(sample, condition) %>%
+  arrange(condition, sample) %>%
+  pull(sample)
+
+expr_long %>%
+  filter(gene_symbol %in% gene_order) %>%
+  mutate(
+    gene_symbol = factor(gene_symbol, levels = rev(gene_order)),
+    sample = factor(sample, levels = sample_order)
+  ) %>%
+  ggplot(aes(x = sample, y = gene_symbol, fill = expression)) +
+  geom_tile() +
+  scale_fill_gradient2(
+    low = "blue", mid = "white", high = "red",
+    midpoint = median(expr_long$expression, na.rm = TRUE),
+    name = "Expression\n(log2)"
+  ) +
+  facet_grid(. ~ condition, scales = "free_x", space = "free_x") +
+  labs(
+    title = "Heatmap — Top 10 Significant Genes, Hippocampus",
+    x = "Sample", y = "Gene"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.spacing = unit(0.2, "lines")
+  )
+```
+
+::: {style="font-size: 0.75em;"}
+Red = high expression — Blue = low expression — Each panel is one condition
+:::
+
+## Project 1: Parameterized Reporting
+
+The same analysis pipeline — re-run automatically across all four brain regions.
+
+::::: {.columns}
+
+:::: {.column width="55%"}
+**The Problem**
+
+Running identical analysis code manually for each of 4 brain regions is tedious and error-prone.
+
+**The Solution: Parameterized Quarto Reports**
+
+- Write the analysis workflow once
+- Pass `brain_region` and `data_path` as parameters
+- Batch-render all four reports with a single R script
+::::
+
+:::: {.column width="45%"}
+**Each report contains:**
+
+- Differential expression summary table
+- Top genes table (searchable)
+- Most significant genes table
+- Volcano plot
+- Top genes bar chart
+- Heatmap
+::::
+
+:::::
+
+## Project 2: The Shiny App
+
+**Why build an app?**
+
+Static reports answer a fixed question. With an app, the user drives the exploration.
+
+. . .
+
+**What the app does:**
+
+::: {.incremental}
+- Select any of the 4 brain regions from a sidebar dropdown — all views update instantly
+- **Tab 1 — Volcano Plot:** adjust logFC and p-value thresholds with sliders to see how significance calls change
+- **Tab 2 — Heatmap:** choose how many top genes to show and filter by condition (AD, Control, or both)
+- **Tab 3 — Top Genes Table:** formatted `gt` table of the most significant genes, adjustable N
+:::
+
+## Demo
+
+**Let's look at the app.**
+
+. . .
+
+> *Switch to RStudio / the running Shiny app now*
+
+. . .
+
+Workflow to cover:
+
+1. Load the app — default view (Hippocampus, Volcano Plot)
+2. Switch brain regions — notice all three tabs update
+3. Adjust logFC and p-value sliders on the Volcano Plot tab
+4. Switch to the Heatmap tab — adjust gene count, toggle conditions
+5. Switch to the Top Genes Table — adjust N, explore the output
+
+## Conclusion
+
+::::: {.columns}
+
+:::: {.column width="50%"}
+**What I built:**
+
+- A parameterized Quarto reporting pipeline for 4 brain regions
+- An interactive Shiny app for real-time exploration of the same data
+
+**What I learned:**
+
+- Parameterization eliminates repetition and reduces errors
+- Reactivity in Shiny makes analysis far more exploratory
+::::
+
+:::: {.column width="50%"}
+**Bigger picture:**
+
+Gene expression patterns differ meaningfully across brain regions in Alzheimer's disease. Tools like these make it easier to identify and communicate those differences — without rerunning code from scratch each time.
+::::
+
+:::::
+
+. . .
+
+*Thank you!*
